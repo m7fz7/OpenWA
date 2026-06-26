@@ -11,6 +11,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Human-readable console logs: the `LoggerService` now renders a colorized, NestJS-style line (`[OpenWA] <pid> - <timestamp> <LEVEL> [Context] <message>` with dimmed `key=value` metadata and stack traces on their own line) instead of always emitting raw JSON, so application logs line up visually with NestJS's own framework logs. The format defaults to structured JSON in production (`NODE_ENV=production`, for containers and log aggregators) and human-readable pretty everywhere else, and can be pinned with `LOG_FORMAT=pretty|json`. `NO_COLOR` / `FORCE_COLOR` are honored. JSON output is byte-for-byte unchanged when selected. (#469)
 
+## [0.7.6] - 2026-06-26
+
+### Changed
+
+- CI now runs the dashboard unit tests, and re-runs the client-SDK suites when a server DTO or the engine interface changes (not only on SDK edits), so contract drift is caught at its source. (#478)
+- The Postgres connection pool now applies query/connection timeouts (`statement_timeout`, `idleTimeoutMillis`, `connectionTimeoutMillis`) on the runtime connection, so a stuck query or a saturated pool fails fast instead of hanging requests. The migration connection keeps idle/connection timeouts but never `statement_timeout`, so a long `CREATE INDEX` is not aborted. Env-tunable (`DATABASE_STATEMENT_TIMEOUT_MS`, `DATABASE_IDLE_TIMEOUT_MS`, `DATABASE_CONNECTION_TIMEOUT_MS`), conservative defaults, `0` disables; SQLite is unaffected. (#480)
+
+### Fixed
+
+- A plugin whose enable failed after it had already subscribed hooks no longer leaves stale hook registrations behind; a later successful enable could otherwise dispatch each event to the plugin more than once. (#477)
+- The WebSocket `message.ack` event now carries the same `{ id, messageId, status, ack }` shape over the socket as the matching webhook does — the socket previously omitted `id` and the legacy `ack`. (#477)
+- Reconnect timers are no longer stacked when two disconnects arrive back-to-back, and a terminal engine failure now cancels any pending reconnect so a `FAILED` session cannot be resurrected by a stale timer. (#477)
+- The dashboard recovers from a stale lazy-loaded chunk after a redeploy with a single guarded reload instead of replacing the whole UI with the error screen; the Content-Security-Policy `img-src` now allows `blob:` so the outgoing image-attachment preview renders. (#477)
+- The Baileys engine's number-check (`GET /sessions/:id/contacts/check/:number`) now returns a neutral `<phone>@c.us` id, matching the whatsapp-web.js engine, instead of a raw `@s.whatsapp.net` id. (#477)
+- The data export/import now includes the `lid_mappings` resolution cache, so a backup/restore or a SQLite↔PostgreSQL migration no longer drops it. (#477)
+- The JavaScript client SDK applies the JSON `Content-Type` and `X-API-Key` after caller-supplied headers, so they can no longer be overridden by `defaultHeaders` (matching the Python and PHP SDKs); an unfollowed redirect (HTTP status `0`) now raises a clear error instead of `OpenWA API 0`. (#478)
+- The infrastructure status endpoint reports the active S3 bucket when storage is in S3 mode, instead of only the unused local media path. (#478)
+- The migration CLI now honors the dashboard-written `data/.env.generated`, so `migration:run:prod` targets the configured database (e.g. PostgreSQL) instead of silently defaulting to SQLite. (#479)
+- The first-run generated config writes `STORAGE_LOCAL_PATH` (the key the backend reads) instead of the dead `STORAGE_PATH`. (#479)
+- The Sessions page now keeps the shared dashboard cache in sync, so creating/stopping/deleting a session no longer leaves the Dashboard showing stale session counts or status until a refresh. (#479)
+
+### Security
+
+- The startup banner prints the full admin API key only when it is first created; on subsequent boots the key is masked, so the live credential is not re-written to the log pipeline on every restart. (#478)
+- The production secret guard now rejects a placeholder `REDIS_PASSWORD` (e.g. `changeme`); an empty/unset password is still allowed so passwordless private-network Redis continues to boot. (#478)
+- The published PHP SDK package no longer ships its test suite, PHPUnit config, or `composer.lock`. (#478)
+- The production weak-secret guard now also rejects the common defaults `123456`, `qwerty`, `root`, `test`, and `demo`. Matching stays an exact full-value comparison, so a strong secret that merely contains one of these words is not blocked. (#480)
+- The gateway now logs a startup warning when `API_KEY_PEPPER` is unset in production (stored API-key hashes then use plain SHA-256). Advisory only — enabling a pepper invalidates existing key hashes, so it stays opt-in and is never enforced. (#480)
+
+## [0.7.5] - 2026-06-26
+
+### Fixed
+
+- The stats/analytics endpoint no longer crashes on PostgreSQL. The message time-series query grouped by an output alias named `timestamp` — a reserved type keyword in PostgreSQL — so `GROUP BY timestamp` was not read as the alias and the query failed with _"column m.createdAt must appear in the GROUP BY clause"_ (SQLite tolerated it, so unit tests on the SQLite test DB never caught it). The alias is now `bucket`; the API response field is unchanged. (#474)
+
+### Documentation
+
+- Added a Traefik / Coolify reverse-proxy guide to the troubleshooting FAQ: WebSocket forwarding, the `docker-proxy` double-hop that causes intermittent `504`s behind Coolify (held-open Socket.IO connections exhausting the pool to the single-port upstream), and idle-timeout tuning. (#467)
+
 ## [0.7.4] - 2026-06-25
 
 ### Fixed

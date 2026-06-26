@@ -62,7 +62,21 @@ const FORBIDDEN_PROD_SECRETS = new Set([
   'password',
   'secret',
   'admin',
+  '123456',
+  'qwerty',
+  'root',
+  'test',
+  'demo',
 ]);
+
+/**
+ * Whether to warn that API_KEY_PEPPER is unset in production. Without a pepper, stored API-key hashes
+ * fall back to plain SHA-256 (still functional). Advisory only — enabling a pepper re-hashes keys and
+ * invalidates existing ones (see api-key-hash.ts), so it stays opt-in and must never be enforced.
+ */
+export function isApiKeyPepperMissingInProduction(nodeEnv?: string, apiKeyPepper?: string): boolean {
+  return nodeEnv === 'production' && !apiKeyPepper?.trim();
+}
 
 export interface SecretCheckEnv {
   nodeEnv?: string;
@@ -74,6 +88,8 @@ export interface SecretCheckEnv {
   apiMasterKey?: string;
   /** ALLOW_DEV_API_KEY — when 'true' it seeds the well-known public `dev-admin-key` as an ADMIN credential. */
   allowDevApiKey?: string;
+  /** REDIS_PASSWORD — optional; passwordless private-network Redis is supported, so only a known placeholder is rejected. */
+  redisPassword?: string;
 }
 
 /**
@@ -98,6 +114,11 @@ export function assertNoDefaultSecretsInProduction(env: SecretCheckEnv): void {
   // API_MASTER_KEY is optional, but if provided it must not be a known default.
   if (env.apiMasterKey && FORBIDDEN_PROD_SECRETS.has(env.apiMasterKey.trim().toLowerCase())) {
     problems.push('API_MASTER_KEY');
+  }
+  // Redis auth is optional (passwordless private-network Redis is a supported deployment), so unlike
+  // DATABASE_PASSWORD this rejects only a known placeholder VALUE — never an empty/unset password.
+  if (env.redisPassword && FORBIDDEN_PROD_SECRETS.has(env.redisPassword.trim().toLowerCase())) {
+    problems.push('REDIS_PASSWORD');
   }
   // ALLOW_DEV_API_KEY=true seeds the publicly-documented `dev-admin-key` as an ADMIN credential
   // (when no API_MASTER_KEY is set) — never allow that opt-in to be carried into production.
