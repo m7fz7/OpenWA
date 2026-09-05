@@ -15,6 +15,7 @@ import {
 import {
   buildIncomingMessageFromBaileys,
   extractBaileysBody,
+  extractBaileysCommerce,
   extractBaileysContext,
   extractBaileysLocation,
   mapBaileysStatus,
@@ -868,6 +869,9 @@ export class BaileysEvents {
     // The quote, the disappearing-messages timer, the mentions and the status styling all come from
     // one region of the content — see BaileysMessageContext.
     const context = extractBaileysContext(normalized);
+    // Commerce ids (order token, product id): the generic path sees an empty body and drops them,
+    // and they are the only handle the commerce APIs accept.
+    const commerce = extractBaileysCommerce(normalized, contentType);
 
     return buildIncomingMessageFromBaileys(
       {
@@ -884,6 +888,8 @@ export class BaileysEvents {
         media,
         location,
         quotedMessage: context.quotedMessage,
+        order: commerce.order,
+        product: commerce.product,
         ephemeralDuration: context.ephemeralDuration,
         mentionedJids: context.mentionedJids,
         backgroundArgb: context.backgroundArgb,

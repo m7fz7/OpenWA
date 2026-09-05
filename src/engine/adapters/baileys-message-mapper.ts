@@ -46,6 +46,12 @@ export function mapBaileysMessageType(contentType: string | undefined, isPtt = f
       // carry display text that {@link extractBaileysBody} flattens into `body`, so they surface as
       // `text` instead of being dropped as `unknown` with an empty body (#562).
       return 'text';
+    case 'orderMessage':
+      return 'order';
+    case 'productMessage':
+      // A shared product card. `catalogMessage` is deliberately NOT mapped here: it links to a whole
+      // catalog and carries no product id, so it has nothing the commerce APIs can act on.
+      return 'product';
     case 'placeholderMessage':
       // Meta masks high-security business messages (enterprise OTPs, banking alerts) on linked/
       // companion devices — which Baileys is — delivering a bodyless `placeholderMessage` (its only
@@ -89,6 +95,10 @@ export interface BaileysBodyContent {
   contactMessage?: { vcard?: string | null } | null;
   /** Several contact cards shared together; each carries its own vCard. */
   contactsArrayMessage?: { contacts?: Array<{ vcard?: string | null }> | null } | null;
+  /** A placed order: the customer's note, else the order's own title. */
+  orderMessage?: { message?: string | null; orderTitle?: string | null } | null;
+  /** A shared product card: the accompanying text, else the product's title. */
+  productMessage?: { body?: string | null; product?: { title?: string | null } | null } | null;
 }
 
 /**
@@ -123,6 +133,10 @@ export function extractBaileysBody(content: BaileysBodyContent): string {
     content.templateButtonReplyMessage?.selectedDisplayText ??
     content.contactMessage?.vcard ??
     extractContactsArrayVcards(content.contactsArrayMessage) ??
+    content.orderMessage?.message ??
+    content.orderMessage?.orderTitle ??
+    content.productMessage?.body ??
+    content.productMessage?.product?.title ??
     ''
   );
 }
@@ -140,6 +154,131 @@ function extractContactsArrayVcards(
     .filter((vcard): vcard is string => !!vcard);
 
   return vcards.length > 0 ? vcards.join('\n') : undefined;
+}
+
+/**
+ * A proto money field: WhatsApp carries amounts as thousandths of a major unit, in a field that
+ * decodes to a plain number or to a protobufjs Long depending on magnitude.
+ */
+type ProtoAmount = number | { toNumber(): number } | null | undefined;
+
+/** Thousandths -> major units. `undefined` for an absent or non-finite amount, never 0. */
+function toMajorUnits(amount: ProtoAmount): number | undefined {
+  if (amount == null) {
+    return undefined;
+  }
+  const raw = typeof amount === 'number' ? amount : amount.toNumber();
+  return Number.isFinite(raw) ? raw / 1000 : undefined;
+}
+
+/**
+ * A currency code only means something next to an amount. An unpriced catalog product still carries
+ * a `currencyCode` — a real capture of an unpriced product reported "VES", which is the proto's
+ * default slot rather than the seller's currency, and passing it on would misprice the item.
+ */
+function currencyFor(amount: number | undefined, code: string | null | undefined): string | undefined {
+  return amount === undefined ? undefined : (code ?? undefined);
+}
+
+/** Proto enums decode to their numeric value; the wire JSON carries the name. Accept both. */
+function enumName(value: string | number | null | undefined, names: Record<number, string>): string | undefined {
+  if (typeof value === 'string') {
+    return value;
+  }
+  return typeof value === 'number' ? names[value] : undefined;
+}
+
+const ORDER_STATUS_NAMES: Record<number, string> = { 1: 'INQUIRY', 2: 'ACCEPTED', 3: 'DECLINED' };
+const ORDER_SURFACE_NAMES: Record<number, string> = { 1: 'CATALOG' };
+
+/**
+ * The inbound message-content subset the commerce extractor reads. Declared structurally, as
+ * {@link BaileysBodyContent} is.
+ */
+export interface BaileysCommerceContent {
+  orderMessage?: {
+    orderId?: string | null;
+    token?: string | null;
+    itemCount?: number | null;
+    status?: string | number | null;
+    surface?: string | number | null;
+    sellerJid?: string | null;
+    totalAmount1000?: ProtoAmount;
+    totalCurrencyCode?: string | null;
+  } | null;
+  productMessage?: {
+    businessOwnerJid?: string | null;
+    product?: {
+      productId?: string | null;
+      title?: string | null;
+      description?: string | null;
+      priceAmount1000?: ProtoAmount;
+      currencyCode?: string | null;
+      retailerId?: string | null;
+      url?: string | null;
+    } | null;
+  } | null;
+}
+
+/** Both commerce shapes an inbound message can carry; each arm is set only for its content type. */
+export interface BaileysCommerce {
+  order?: IncomingMessage['order'];
+  product?: IncomingMessage['product'];
+}
+
+/**
+ * Extract the ids a commerce message carries: an order's `orderId`/`token` (the only route to its
+ * line items, via getOrderDetails) and a shared product's `productId` (what sendProduct takes).
+ * Both are dropped by the generic path, which sees only an empty body.
+ *
+ * An order or product without its id yields nothing: a client cannot act on either, and an entry
+ * with an empty id would look actionable while failing at the API. Pass the NORMALIZED content, as
+ * the adapter does — a commerce message in a disappearing chat nests under `ephemeralMessage`.
+ */
+export function extractBaileysCommerce(
+  content: BaileysCommerceContent,
+  contentType: string | undefined,
+): BaileysCommerce {
+  if (contentType === 'orderMessage') {
+    const om = content.orderMessage;
+    if (!om?.orderId) {
+      return {};
+    }
+    const total = toMajorUnits(om.totalAmount1000);
+    return {
+      order: {
+        orderId: om.orderId,
+        token: om.token ?? undefined,
+        itemCount: om.itemCount ?? undefined,
+        status: enumName(om.status, ORDER_STATUS_NAMES),
+        surface: enumName(om.surface, ORDER_SURFACE_NAMES),
+        sellerJid: om.sellerJid ?? undefined,
+        total,
+        currency: currencyFor(total, om.totalCurrencyCode),
+      },
+    };
+  }
+
+  if (contentType === 'productMessage') {
+    const snapshot = content.productMessage?.product;
+    const price = toMajorUnits(snapshot?.priceAmount1000);
+    return snapshot?.productId
+      ? {
+          product: {
+            productId: snapshot.productId,
+            title: snapshot.title ?? undefined,
+            description: snapshot.description ?? undefined,
+            price,
+            currency: currencyFor(price, snapshot.currencyCode),
+            retailerId: snapshot.retailerId ?? undefined,
+            url: snapshot.url ?? undefined,
+            businessOwnerJid: content.productMessage?.businessOwnerJid ?? undefined,
+          },
+        }
+      : {};
+  }
+
+  return {};
 }
 
 /**
@@ -318,6 +457,9 @@ export interface BaileysIncomingFields {
   location?: IncomingMessage['location'];
   /** Pre-extracted quoted message context. Populated by the adapter when `contextInfo` is present. */
   quotedMessage?: IncomingMessage['quotedMessage'];
+  /** Pre-extracted commerce ids. Populated by the adapter for `orderMessage` / `productMessage`. */
+  order?: IncomingMessage['order'];
+  product?: IncomingMessage['product'];
   /** Ephemeral/disappearing-messages timer from `contextInfo.expiration` on the Baileys message. */
   ephemeralDuration?: number;
   /** @mentioned engine JIDs from `contextInfo.mentionedJid`; normalized and surfaced as `mentionedIds`. */
@@ -397,6 +539,14 @@ export function buildIncomingMessageFromBaileys(
 
   if (fields.quotedMessage) {
     incoming.quotedMessage = fields.quotedMessage;
+  }
+
+  if (fields.order) {
+    incoming.order = fields.order;
+  }
+
+  if (fields.product) {
+    incoming.product = fields.product;
   }
 
   // Ephemeral/disappearing-messages timer, when the chat has one set.

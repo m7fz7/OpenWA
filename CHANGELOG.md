@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Inbound WhatsApp Business commerce messages are no longer flattened to a bodyless `unknown`. A cart placed
+  from the catalog arrives as type `order` and a shared product card as type `product`, each carrying the ids
+  the commerce APIs need: `order { orderId, token }` (the token is scoped to that one order and is the only
+  route to its line items) and `product { productId }`. Both engines populate the ids and both types are
+  accepted by webhook and automation-rule message-type filters. On Baileys the payloads also carry the
+  priced and counted fields (`itemCount`, `status`, `surface`, `sellerJid`, `total`, `currency`, `price`,
+  `retailerId`, `url`); whatsapp-web.js does not surface those, so they are absent there. The message `body`
+  now falls back to the customer's order note or the product title instead of arriving empty.
+
 ## [0.23.4] - 2026-09-05
 
 ### Added

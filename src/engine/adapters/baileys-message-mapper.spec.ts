@@ -2,6 +2,7 @@ import {
   BaileysIncomingFields,
   buildIncomingMessageFromBaileys,
   extractBaileysBody,
+  extractBaileysCommerce,
   extractBaileysContext,
   mapBaileysMessageType,
   mapBaileysStatus,
@@ -37,6 +38,12 @@ describe('mapBaileysMessageType (baileys content-type -> neutral MessageType)', 
     // Regression trap: calls arrive via the `call` socket event, never as a message content type,
     // so any call-ish token must stay 'unknown' (no accidental mapping).
     ['callLogMessage', false, 'unknown'],
+    // WhatsApp Business commerce shapes carry ids the commerce APIs need, so they get their own
+    // types instead of collapsing to a bodyless `unknown`.
+    ['orderMessage', false, 'order'],
+    ['productMessage', false, 'product'],
+    // A catalog link carries no product id, so it stays unmapped — nothing can act on it.
+    ['catalogMessage', false, 'unknown'],
   ])('maps %s (ptt=%s) -> %s', (raw, ptt, expected) => {
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
     expect(mapBaileysMessageType(raw as string | undefined, ptt as boolean)).toBe(expected);
@@ -334,5 +341,101 @@ describe('buildIncomingMessageFromBaileys', () => {
   it('omits mentionedIds when absent or empty', () => {
     expect(buildIncomingMessageFromBaileys(base).mentionedIds).toBeUndefined();
     expect(buildIncomingMessageFromBaileys({ ...base, mentionedJids: [] }).mentionedIds).toBeUndefined();
+  });
+});
+
+describe('extractBaileysCommerce (order / product ids)', () => {
+  // Field-for-field shape of an inbound order as WhatsApp sends it; ids and token are placeholders.
+  const orderContent = {
+    orderMessage: {
+      orderId: '1000000000000001',
+      token: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+      itemCount: 1,
+      status: 'INQUIRY',
+      surface: 'CATALOG',
+      sellerJid: '10000000000001@lid',
+      totalAmount1000: 25500,
+      totalCurrencyCode: 'AED',
+    },
+  };
+
+  it('extracts the order id and token, converting the total out of thousandths', () => {
+    const { order } = extractBaileysCommerce(orderContent, 'orderMessage');
+    expect(order).toEqual({
+      orderId: '1000000000000001',
+      token: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+      itemCount: 1,
+      status: 'INQUIRY',
+      surface: 'CATALOG',
+      sellerJid: '10000000000001@lid',
+      total: 25.5,
+      currency: 'AED',
+    });
+  });
+
+  it('resolves numeric proto enums to their names', () => {
+    const { order } = extractBaileysCommerce(
+      { orderMessage: { ...orderContent.orderMessage, status: 2, surface: 1 } },
+      'orderMessage',
+    );
+    expect(order?.status).toBe('ACCEPTED');
+    expect(order?.surface).toBe('CATALOG');
+  });
+
+  it('reads a Long-valued amount through toNumber', () => {
+    const { order } = extractBaileysCommerce(
+      { orderMessage: { ...orderContent.orderMessage, totalAmount1000: { toNumber: () => 9_000 } } },
+      'orderMessage',
+    );
+    expect(order?.total).toBe(9);
+  });
+
+  it('leaves total and currency unset for an unpriced order', () => {
+    const { order } = extractBaileysCommerce({ orderMessage: { orderId: '1' } }, 'orderMessage');
+    expect(order?.total).toBeUndefined();
+    expect(order?.currency).toBeUndefined();
+  });
+
+  it('drops the currency of an unpriced product rather than reporting the proto default', () => {
+    // Observed on the wire: an unpriced catalog product still carries a currencyCode ('VES'), which
+    // is the proto's default slot rather than the seller's currency.
+    const { product } = extractBaileysCommerce(
+      { productMessage: { product: { productId: '2000000000000002', title: 'Sample', currencyCode: 'VES' } } },
+      'productMessage',
+    );
+    expect(product?.price).toBeUndefined();
+    expect(product?.currency).toBeUndefined();
+  });
+
+  it('extracts the product id and price from a shared product card', () => {
+    const { product } = extractBaileysCommerce(
+      {
+        productMessage: {
+          businessOwnerJid: '100000000000@s.whatsapp.net',
+          product: { productId: '2000000000000002', title: 'Sample', priceAmount1000: 12_000, currencyCode: 'AED' },
+        },
+      },
+      'productMessage',
+    );
+    expect(product).toEqual({
+      productId: '2000000000000002',
+      title: 'Sample',
+      description: undefined,
+      price: 12,
+      currency: 'AED',
+      retailerId: undefined,
+      url: undefined,
+      businessOwnerJid: '100000000000@s.whatsapp.net',
+    });
+  });
+
+  it('yields nothing when the id that makes it actionable is missing', () => {
+    expect(extractBaileysCommerce({ orderMessage: { token: 'x' } }, 'orderMessage')).toEqual({});
+    expect(extractBaileysCommerce({ productMessage: { product: { title: 'A' } } }, 'productMessage')).toEqual({});
+  });
+
+  it('yields nothing for a non-commerce content type', () => {
+    expect(extractBaileysCommerce(orderContent, 'conversation')).toEqual({});
+    expect(extractBaileysCommerce({}, undefined)).toEqual({});
   });
 });

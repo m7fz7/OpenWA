@@ -252,6 +252,8 @@ export const MESSAGE_TYPES = [
   'poll',
   'call',
   'revoked',
+  'order',
+  'product',
   'masked',
   'unknown',
 ] as const;

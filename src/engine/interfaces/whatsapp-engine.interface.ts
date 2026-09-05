@@ -78,6 +78,10 @@ export type MessageType =
   | 'poll'
   | 'call'
   | 'revoked'
+  // WhatsApp Business commerce: a customer's cart placed from the catalog, and a single product
+  // card shared into a chat. Both carry the ids the commerce APIs need — see `IncomingMessage`.
+  | 'order'
+  | 'product'
   // A message WhatsApp deliberately withheld from linked/companion devices (e.g. high-security
   // business OTPs): the payload is absent by design, not unparseable. See `mapBaileysMessageType`.
   | 'masked'
@@ -110,6 +114,44 @@ export interface IncomingMessage {
   mentionedIds?: string[];
   /** Set for `call` (call_log) messages: video vs voice, and whether an incoming call went unanswered. */
   call?: { video: boolean; missed: boolean };
+  /**
+   * Set for `order` messages: a cart the customer placed from the business catalog. The message
+   * itself carries no line items — `orderId` plus `token` are the only way to resolve them, and the
+   * token is scoped to this one order, so both must survive to the client that will fetch them.
+   *
+   * Both engines populate the ids. The priced/counted fields below are Baileys only: whatsapp-web.js
+   * surfaces just `orderId` and `token` on its `Message`, so they are absent there rather than wrong.
+   */
+  order?: {
+    orderId: string;
+    /** Opaque, single-order credential. Pass through unchanged; do not log it. */
+    token?: string;
+    itemCount?: number;
+    /** INQUIRY | ACCEPTED | DECLINED. */
+    status?: string;
+    /** Where the order was placed from, e.g. CATALOG. */
+    surface?: string;
+    sellerJid?: string;
+    /** Order total in major units; the proto carries thousandths. Absent when unpriced. */
+    total?: number;
+    currency?: string;
+  };
+  /**
+   * Set for `product` messages: the catalog product shared into the chat. `price`, `currency`,
+   * `retailerId` and `url` are Baileys only, for the same reason as `order` above.
+   */
+  product?: {
+    productId: string;
+    title?: string;
+    description?: string;
+    /** Price in major units; the proto carries thousandths. Absent when unpriced. */
+    price?: number;
+    currency?: string;
+    /** The seller's own SKU, when they set one. */
+    retailerId?: string;
+    url?: string;
+    businessOwnerJid?: string;
+  };
   /**
    * Set by the adapter when the sender is identified by a privacy id (e.g. a WhatsApp `@lid`) rather
    * than a phone number, so engine-neutral code can decide whether to attempt phone resolution without

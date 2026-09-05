@@ -22,6 +22,8 @@ const MESSAGE_TYPES: MessageType[] = [
   'poll',
   'call',
   'revoked',
+  'order',
+  'product',
   'masked',
   'unknown',
 ];
